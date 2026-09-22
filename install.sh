@@ -16,7 +16,10 @@ WGVPN_CLIENTS_DIR="${WGVPN_STATE_DIR}/clients"
 WGVPN_PEERS_DIR="${WGVPN_STATE_DIR}/site-peers"
 WGVPN_BACKUP_DIR="${WGVPN_STATE_DIR}/backups"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+# ${BASH_SOURCE[0]} is unset when the script is piped to `bash -s` (curl | bash),
+# since there is no source file - fall back to $0, which bash sets to "bash" in
+# that case, so this resolves to the current directory rather than erroring.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 
 # --- Bootstrap: fetch the repo if running via curl | bash (no local lib/) ---
 FETCHED_ROOT=""

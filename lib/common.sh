@@ -6,7 +6,7 @@ if [ -n "${WGVPN_COMMON_LOADED:-}" ]; then return 0 2>/dev/null || exit 0; fi
 WGVPN_COMMON_LOADED=1
 
 # --- Paths (single source of truth) ---------------------------------------
-WGVPN_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+WGVPN_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 WGVPN_PREFIX="${WGVPN_PREFIX:-/opt/wireguard-vpn-server}"
 WGVPN_STATE_DIR="${WGVPN_STATE_DIR:-/etc/wireguard-vpn-server}"
 WGVPN_WG_DIR="${WGVPN_WG_DIR:-/etc/wireguard}"

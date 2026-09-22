@@ -7,7 +7,7 @@ WGVPN_PREFIX="${WGVPN_PREFIX:-/opt/wireguard-vpn-server}"
 LIB_DIR="${WGVPN_PREFIX}/lib"
 if [ ! -d "$LIB_DIR" ]; then
 	# allow running directly from a source checkout for development/testing
-	LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" >/dev/null 2>&1 && pwd)"
+	LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../lib" >/dev/null 2>&1 && pwd)"
 fi
 
 # shellcheck source=/dev/null
