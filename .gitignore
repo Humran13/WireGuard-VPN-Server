@@ -1,0 +1,19 @@
+# Never commit real keys, configs, or backups
+*.conf
+!tests/**/*.conf
+*.key
+*.psk
+wg0.conf
+*-backup-*.tar.gz
+*.tar.gz
+
+# Local test/dev artifacts
+/tmp/
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp

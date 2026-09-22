@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: bash -n syntax check
+        run: |
+          set -e
+          for f in install.sh bin/wg-vpn lib/*.sh; do
+            bash -n "$f"
+          done
+      - name: ShellCheck
+        run: shellcheck -x install.sh bin/wg-vpn lib/*.sh
+
+  unit-tests:
+    name: Bats unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bats and jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bats jq iproute2
+      - name: Run unit tests
+        run: bats tests/
+
+  install-matrix:
+    name: Install/config test (Ubuntu ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["18.04", "20.04", "22.04", "24.04"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Non-interactive install inside Ubuntu ${{ matrix.version }} container
+        run: |
+          docker run --rm --cap-add=NET_ADMIN --cap-add=NET_RAW \
+            -v "${{ github.workspace }}:/repo:ro" \
+            "ubuntu:${{ matrix.version }}" \
+            bash -c "
+              set -e
+              cp -r /repo /root/src && cd /root/src
+              apt-get update -qq
+              bash install.sh --non-interactive --assume-yes \
+                --mode=full4 --public-iface=eth0 --endpoint=203.0.113.10 \
+                --dns=1.1.1.1
+              wg-vpn add-client alice
+              wg-vpn list-clients
+              wg-vpn version
+            "
+      - name: Note on scope
+        run: |
+          echo "This job validates package installation, key generation, config"
+          echo "rendering, and client management logic inside a plain (non-systemd)"
+          echo "container. It does NOT start the WireGuard interface or prove the"
+          echo "kernel module loads on this runner's kernel - the installer detects"
+          echo "the absence of systemd here and skips the service-start step."
+          echo "Real end-to-end tunnel tests (handshake, ping, NAT, revocation,"
+          echo "restart persistence) are run separately using Linux network"
+          echo "namespaces on a host where the wireguard kernel module is loaded"
+          echo "- see docs/TESTING.md."

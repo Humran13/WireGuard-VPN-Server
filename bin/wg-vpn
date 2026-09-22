@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+# wg-vpn - WireGuard VPN Server Manager
+# shellcheck shell=bash
+set -euo pipefail
+
+WGVPN_PREFIX="${WGVPN_PREFIX:-/opt/wireguard-vpn-server}"
+LIB_DIR="${WGVPN_PREFIX}/lib"
+if [ ! -d "$LIB_DIR" ]; then
+	# allow running directly from a source checkout for development/testing
+	LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" >/dev/null 2>&1 && pwd)"
+fi
+
+# shellcheck source=/dev/null
+for f in common os validate network wireguard routing firewall peers backup diagnostics update uninstall; do
+	source "${LIB_DIR}/${f}.sh"
+done
+
+WGVPN_PROG="wg-vpn"
+
+usage() {
+	cat <<EOF
+${WGVPN_PROG} v${WGVPN_VERSION} - WireGuard VPN Server Manager
+
+Usage:
+  sudo ${WGVPN_PROG}                        Open interactive manager
+  sudo ${WGVPN_PROG} <command> [args]
+
+Commands:
+  status                    Show server status
+  add-client <name>         Add a new client
+  list-clients              List all clients
+  show-client <name>        Show client details (no secrets)
+  qr <name>                 Show client QR code
+  export <name> [file]      Export client .conf file
+  enable-client <name>      Enable a client
+  disable-client <name>     Disable (revoke) a client
+  delete-client <name>      Delete a client permanently
+  diagnostics                Run diagnostics
+  logs                      Show recent service logs
+  restart                   Restart WireGuard service
+  backup                    Create a backup archive
+  restore <archive>         Restore from a backup archive
+  repair                    Attempt to repair common problems
+  update                    Self-update to latest release
+  uninstall [--full]        Uninstall (program only, or --full)
+  version                   Show version
+  --help                    Show this help
+
+Run with no arguments for the interactive menu.
+EOF
+}
+
+cmd_status() {
+	echo "WireGuard VPN Server Status"
+	echo "============================"
+	echo "Interface:        ${WGVPN_IFACE}"
+	echo "Service state:    $(wg_service_status)"
+	echo "UDP port:         $(json_get "$WGVPN_CONF" wg_port)"
+	echo "VPN IPv4 subnet:  $(json_get "$WGVPN_CONF" ipv4_subnet)"
+	local v6
+	v6="$(json_get "$WGVPN_CONF" ipv6_subnet)"
+	if [ -n "$v6" ]; then echo "VPN IPv6 subnet:  ${v6}"; fi
+	echo "Endpoint:         $(json_get "$WGVPN_CONF" endpoint)"
+	echo "Server pubkey:    $(json_get "$WGVPN_CONF" server_public_key)"
+	if command_exists wg; then echo "wireguard-tools:  $(wg --version 2>/dev/null | head -n1)"; fi
+	echo "Kernel WG:        $(os_kernel_wireguard_status)"
+	local n
+	n="$(find "$WGVPN_CLIENTS_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l)"
+	echo "Configured peers: ${n}"
+	echo "Forwarding:       $(net_sysctl_forwarding_status)"
+	echo
+	if [ "$(wg_service_status)" = "active" ] && command_exists wg; then
+		echo "Live peers:"
+		wg show "$WGVPN_IFACE" 2>/dev/null || echo "  (unavailable)"
+	fi
+}
+
+cmd_logs() {
+	command_exists journalctl || die "journalctl not available."
+	journalctl -u "wg-quick@${WGVPN_IFACE}" -n 100 --no-pager
+}
+
+internal_fw_apply() {
+	local port fmode iface v4 v6 iso
+	port="$(json_get "$WGVPN_CONF" wg_port)"
+	fmode="$(json_get "$WGVPN_CONF" forward_mode)"
+	iface="$(json_get "$WGVPN_CONF" public_iface)"
+	v4="$(json_get "$WGVPN_CONF" ipv4_subnet)"
+	v6="$(json_get "$WGVPN_CONF" ipv6_subnet)"
+	iso="$(json_get "$WGVPN_CONF" client_isolation)"
+	fw_apply "$port" "$fmode" "$iface" "$v4" "$v6" "$([ "$iso" = "true" ] && echo 1 || echo 0)"
+}
+
+cmd_repair() {
+	info "Running repair..."
+	command_exists wg || wg_install_packages
+	mkdir -p "$WGVPN_STATE_DIR" "$WGVPN_CLIENTS_DIR" "$WGVPN_PEERS_DIR" "$WGVPN_BACKUP_DIR"
+	chmod 700 "$WGVPN_STATE_DIR"
+	if [ -d "$WGVPN_WG_DIR" ]; then chmod 700 "$WGVPN_WG_DIR"; fi
+	systemctl enable "wg-quick@${WGVPN_IFACE}" >/dev/null 2>&1 || true
+	wg_render_server_config
+	if wg_config_syntax_ok; then
+		wg_service_restart
+		ok "Configuration regenerated and service restarted."
+	else
+		err "Regenerated configuration failed to validate; manual review required."
+	fi
+	local v4 v6e
+	v4="$(json_get "$WGVPN_CONF" ipv4_subnet)"
+	v6e="$(json_get "$WGVPN_CONF" ipv6_enabled)"
+	net_sysctl_enable_forwarding 1 "$([ "$v6e" = "true" ] && echo 1 || echo 0)"
+	internal_fw_apply
+	ok "Repair complete."
+}
+
+cmd_uninstall() {
+	local mode="program"
+	if [ "${1:-}" = "--full" ]; then mode="full"; fi
+	if [ "$mode" = "full" ]; then
+		confirm "This will PERMANENTLY delete all clients, keys, and WireGuard configuration. Continue?" n || { info "Cancelled."; return 0; }
+	else
+		confirm "Remove the wg-vpn program? WireGuard config and backups will be preserved." y || { info "Cancelled."; return 0; }
+	fi
+	uninstall_run "$mode"
+}
+
+interactive_menu() {
+	while true; do
+		echo
+		echo "WireGuard VPN Server Manager (v${WGVPN_VERSION})"
+		echo "============================"
+		cat <<'EOF'
+1.  Server Status
+2.  Add Client
+3.  List Clients
+4.  Show Client
+5.  Show Client QR Code
+6.  Export Client Config
+7.  Enable Client
+8.  Disable Client
+9.  Delete/Revoke Client
+10. Site-to-Site Peers
+11. Server Settings
+12. Connection / Routing Settings
+13. Restart WireGuard
+14. Diagnostics
+15. Logs
+16. Backup
+17. Restore
+18. Update
+19. Repair
+20. Uninstall
+
+0.  Exit
+EOF
+		local choice
+		read -r -p "Select an option: " choice || { echo; exit 0; }
+		case "$choice" in
+			1) cmd_status || true ;;
+			2) read -r -p "Client name: " n && peer_add "$n"; true ;;
+			3) peer_list ;;
+			4) read -r -p "Client name: " n && peer_show "$n"; true ;;
+			5) read -r -p "Client name: " n && peer_qr "$n"; true ;;
+			6) read -r -p "Client name: " n && read -r -p "Output path [./${n}.conf]: " o && peer_export "$n" "${o:-./${n}.conf}"; true ;;
+			7) read -r -p "Client name: " n && peer_enable "$n"; true ;;
+			8) read -r -p "Client name: " n && peer_disable "$n"; true ;;
+			9) read -r -p "Client name: " n && confirm "Delete client '$n'?" n && peer_delete "$n"; true ;;
+			10) menu_site_peers || true ;;
+			11) menu_server_settings || true ;;
+			12) menu_routing_settings || true ;;
+			13) wg_service_restart && ok "Restarted." || true ;;
+			14) diagnostics_run || true ;;
+			15) cmd_logs || true ;;
+			16) backup_create || true ;;
+			17) read -r -p "Backup archive path: " a && backup_restore "$a"; true ;;
+			18) update_run || true ;;
+			19) cmd_repair || true ;;
+			20) menu_uninstall || true ;;
+			0) exit 0 ;;
+			*) warn "Invalid selection." ;;
+		esac
+	done
+}
+
+menu_uninstall() {
+	echo "1. Remove program, keep WireGuard config/backups"
+	echo "2. Complete removal (destroys clients and configuration)"
+	local c
+	read -r -p "Select [1-2]: " c
+	case "$c" in
+		1) cmd_uninstall ;;
+		2) cmd_uninstall --full ;;
+		*) warn "Cancelled." ;;
+	esac
+}
+
+menu_site_peers() {
+	echo "Site-to-Site Peers"
+	echo "1. List   2. Add   3. Remove"
+	local c
+	read -r -p "Select: " c
+	case "$c" in
+		1) find "$WGVPN_PEERS_DIR" -maxdepth 1 -name '*.json' -exec basename {} .json \; 2>/dev/null ;;
+		2)
+			read -r -p "Peer name: " n
+			read -r -p "Peer public key: " pk
+			read -r -p "Remote subnets (comma-separated CIDRs): " nets
+			read -r -p "Endpoint (host:port, optional): " ep
+			site_peer_add "$n" "$pk" "$nets" "$ep"
+			;;
+		3) read -r -p "Peer name: " n && site_peer_delete "$n" ;;
+		*) warn "Invalid." ;;
+	esac
+}
+
+menu_server_settings() {
+	cmd_status
+}
+
+menu_routing_settings() {
+	echo "Default connection mode: $(json_get "$WGVPN_CONF" default_mode)"
+	echo "(Change per-client mode with 'add-client'; global default set during install/repair.)"
+}
+
+site_peer_add() {
+	local name="$1" pubkey="$2" nets="$3" endpoint="${4:-}"
+	valid_peer_name "$name" || die "Invalid peer name."
+	valid_base64_key "$pubkey" || die "Invalid public key."
+	routing_validate_cidr_list "$nets" 4 || routing_validate_cidr_list "$nets" 6 || die "Invalid CIDR list."
+	local overlap
+	overlap="$(routing_overlaps_existing_peer_routes "$nets" "$WGVPN_PEERS_DIR" "$name")"
+	if [ -n "$overlap" ]; then die "Route overlap detected: $overlap"; fi
+	mkdir -p "$WGVPN_PEERS_DIR"
+	local psk
+	psk="$(wg_genpsk)"
+	jq -n --arg name "$name" --arg public_key "$pubkey" --arg allowed_ips "$nets" \
+		--arg endpoint "$endpoint" --arg preshared_key "$psk" --arg keepalive "25" \
+		'{name:$name, enabled:true, public_key:$public_key, allowed_ips:$allowed_ips, endpoint:$endpoint, preshared_key:$preshared_key, keepalive:$keepalive}' \
+		| atomic_write "${WGVPN_PEERS_DIR}/${name}.json" 0600
+	wg_render_server_config
+	wg_apply_peer_live
+	ok "Site-to-site peer '${name}' added."
+}
+
+site_peer_delete() {
+	local name="$1" f
+	f="${WGVPN_PEERS_DIR}/${name}.json"
+	[ -f "$f" ] || die "No such peer: $name"
+	local pubkey
+	pubkey="$(json_get "$f" public_key)"
+	wg_revoke_peer_live "$pubkey"
+	rm -f -- "$f"
+	wg_render_server_config
+	ok "Site-to-site peer '${name}' removed."
+}
+
+main() {
+	require_root
+
+	local cmd="${1:-}"
+	[ -n "$cmd" ] && shift || true
+
+	case "$cmd" in
+		"") interactive_menu ;;
+		status) cmd_status ;;
+		add-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} add-client <name> [mode] [v4nets] [v6nets] [dns] [keepalive]"; peer_add "$@" ;;
+		list-clients) peer_list ;;
+		show-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} show-client <name>"; peer_show "$1" ;;
+		qr) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} qr <name>"; peer_qr "$1" ;;
+		export) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} export <name> [file]"; peer_export "$@" ;;
+		enable-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} enable-client <name>"; peer_enable "$1" ;;
+		disable-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} disable-client <name>"; peer_disable "$1" ;;
+		delete-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} delete-client <name>"; peer_delete "$1" ;;
+		diagnostics) diagnostics_run ;;
+		logs) cmd_logs ;;
+		restart) wg_service_restart && ok "Restarted." ;;
+		backup) backup_create ;;
+		restore) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} restore <archive>"; backup_restore "$1" ;;
+		repair) cmd_repair ;;
+		update) update_run ;;
+		uninstall) cmd_uninstall "${1:-}" ;;
+		version|--version|-v) echo "${WGVPN_PROG} v${WGVPN_VERSION}" ;;
+		__internal-fw-apply) internal_fw_apply ;;
+		__internal-fw-remove) fw_remove ;;
+		--help|-h|help) usage ;;
+		*) err "Unknown command: $cmd"; usage; exit 1 ;;
+	esac
+}
+
+main "$@"

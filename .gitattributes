@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.bats text eol=lf
+bin/wg-vpn text eol=lf
+install.sh text eol=lf
+VERSION text eol=lf
