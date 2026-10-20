@@ -75,6 +75,7 @@ require_root() {
 if ! declare -f wgvpn_on_exit >/dev/null 2>&1; then
 	WGVPN_EXIT_HOOKS=()
 	wgvpn_on_exit() { WGVPN_EXIT_HOOKS+=("$1"); }
+	# shellcheck disable=SC2329  # invoked indirectly via `trap ... EXIT`
 	wgvpn_run_exit_hooks() {
 		local ec=$? i hook
 		for (( i=${#WGVPN_EXIT_HOOKS[@]}-1; i>=0; i-- )); do
@@ -104,6 +105,7 @@ wgvpn_init_tty() {
 		wgvpn_on_exit wgvpn_close_tty
 	fi
 }
+# shellcheck disable=SC2329  # invoked indirectly via wgvpn_on_exit
 wgvpn_close_tty() {
 	if [ "$WGVPN_TTY_FD" = "3" ]; then exec 3<&- 2>/dev/null || true; fi
 }
@@ -127,6 +129,7 @@ prompt_read() {
 
 # --- Temp files / atomic writes --------------------------------------------
 WGVPN_TMPFILES=()
+# shellcheck disable=SC2329  # invoked indirectly via wgvpn_on_exit
 wgvpn_cleanup_tmp() {
 	local f
 	for f in "${WGVPN_TMPFILES[@]:-}"; do

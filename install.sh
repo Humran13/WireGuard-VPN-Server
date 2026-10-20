@@ -32,6 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 # own copy.
 WGVPN_EXIT_HOOKS=()
 wgvpn_on_exit() { WGVPN_EXIT_HOOKS+=("$1"); }
+# shellcheck disable=SC2329  # invoked indirectly via `trap ... EXIT`
 wgvpn_run_exit_hooks() {
 	local ec=$? i hook
 	for (( i=${#WGVPN_EXIT_HOOKS[@]}-1; i>=0; i-- )); do
@@ -59,6 +60,7 @@ if [ ! -f "${SCRIPT_DIR}/lib/common.sh" ]; then
 	SCRIPT_DIR="$FETCHED_ROOT"
 fi
 
+# shellcheck disable=SC2329  # invoked indirectly via wgvpn_on_exit
 cleanup_fetched() {
 	if [ -n "$FETCHED_ROOT" ] && [ -d "$FETCHED_ROOT" ]; then rm -rf -- "$FETCHED_ROOT"; fi
 }
@@ -70,6 +72,7 @@ for f in common os validate network wireguard routing firewall peers backup diag
 done
 
 INSTALL_FAILED_PHASE=""
+# shellcheck disable=SC2329  # invoked indirectly via wgvpn_on_exit
 install_rollback() {
 	local ec="${1:-$?}"
 	if [ "$ec" -ne 0 ] && [ -n "$INSTALL_FAILED_PHASE" ]; then
