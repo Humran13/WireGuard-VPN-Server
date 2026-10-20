@@ -63,6 +63,68 @@ require_root() {
 	fi
 }
 
+# --- Coordinated EXIT handling ----------------------------------------------
+# A plain `trap foo EXIT` silently replaces any trap set earlier in the
+# process (eg. by install.sh's own bootstrap code), so cleanup handlers can
+# go missing without any error. wgvpn_on_exit lets any number of callers
+# register a handler; they all run, in reverse-registration (LIFO) order,
+# when the process exits. install.sh defines a copy of this same mechanism
+# before common.sh is even sourced (it needs it earlier, to register
+# cleanup for its fetched-sources bootstrap) - the guard below means
+# whichever copy runs first wins and the other is a no-op.
+if ! declare -f wgvpn_on_exit >/dev/null 2>&1; then
+	WGVPN_EXIT_HOOKS=()
+	wgvpn_on_exit() { WGVPN_EXIT_HOOKS+=("$1"); }
+	wgvpn_run_exit_hooks() {
+		local ec=$? i hook
+		for (( i=${#WGVPN_EXIT_HOOKS[@]}-1; i>=0; i-- )); do
+			hook="${WGVPN_EXIT_HOOKS[i]}"
+			[ -n "$hook" ] && "$hook" "$ec"
+		done
+	}
+	trap wgvpn_run_exit_hooks EXIT
+fi
+
+# --- Controlling-terminal input (safe for `curl | bash`) --------------------
+# When this script's own stdin is a pipe (eg. `curl ... | bash`), reading
+# with `read -p` consumes the remaining installer source as if it were
+# typed answers instead of waiting for the user. WGVPN_TTY_FD routes
+# interactive reads to the controlling terminal in that case, while still
+# honoring a real redirected/piped stdin for non-interactive automation
+# (eg. `./install.sh < answers.txt`).
+WGVPN_TTY_FD=""
+WGVPN_TTY_CHECKED=0
+wgvpn_init_tty() {
+	[ "$WGVPN_TTY_CHECKED" = "1" ] && return 0
+	WGVPN_TTY_CHECKED=1
+	if [ -t 0 ]; then
+		WGVPN_TTY_FD=0
+	elif exec 3<>/dev/tty 2>/dev/null; then
+		WGVPN_TTY_FD=3
+		wgvpn_on_exit wgvpn_close_tty
+	fi
+}
+wgvpn_close_tty() {
+	if [ "$WGVPN_TTY_FD" = "3" ]; then exec 3<&- 2>/dev/null || true; fi
+}
+
+# prompt_read <var> <prompt-text>
+# Equivalent to `read -r -p "<prompt-text>" <var>`, except the answer is
+# always read from the controlling terminal rather than this script's own
+# stdin (unless stdin is itself a real terminal). Dies with a clear error
+# if interactive input was requested but no terminal is reachable, rather
+# than silently reading installer source or hanging forever.
+prompt_read() {
+	local __var="$1" __prompt="$2" __reply="" __status=0
+	wgvpn_init_tty
+	if [ -z "$WGVPN_TTY_FD" ]; then
+		die "Interactive input requested but no controlling terminal is available (stdin is not a tty and /dev/tty could not be opened). Re-run with --non-interactive, or pass the relevant --flag."
+	fi
+	read -r -p "$__prompt" __reply <&"$WGVPN_TTY_FD" || __status=$?
+	printf -v "$__var" '%s' "$__reply"
+	return "$__status"
+}
+
 # --- Temp files / atomic writes --------------------------------------------
 WGVPN_TMPFILES=()
 wgvpn_cleanup_tmp() {
@@ -71,7 +133,7 @@ wgvpn_cleanup_tmp() {
 		if [ -n "$f" ] && [ -e "$f" ]; then rm -f -- "$f"; fi
 	done
 }
-trap wgvpn_cleanup_tmp EXIT
+wgvpn_on_exit wgvpn_cleanup_tmp
 
 wgvpn_mktemp() {
 	local dir="${1:-${TMPDIR:-/tmp}}"
@@ -98,10 +160,15 @@ confirm() {
 	local reply hint
 	[ "$default" = "y" ] && hint="Y/n" || hint="y/N"
 	if [ "${WGVPN_ASSUME_YES:-0}" = "1" ]; then return 0; fi
-	if [ ! -t 0 ]; then
+	# Deliberately check WGVPN_TTY_FD directly (not prompt_read, which dies
+	# when no terminal is reachable): confirm() must fall back to the
+	# default instead of aborting, so true non-interactive runs never hang
+	# or fail just because they hit a confirmation.
+	wgvpn_init_tty
+	if [ -z "$WGVPN_TTY_FD" ]; then
 		[ "$default" = "y" ] && return 0 || return 1
 	fi
-	read -r -p "$prompt [$hint]: " reply || true
+	read -r -p "$prompt [$hint]: " reply <&"$WGVPN_TTY_FD" || true
 	reply="${reply:-$default}"
 	case "$reply" in
 		[Yy]|[Yy][Ee][Ss]) return 0 ;;

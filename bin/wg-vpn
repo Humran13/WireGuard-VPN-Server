@@ -125,6 +125,8 @@ cmd_uninstall() {
 }
 
 interactive_menu() {
+	wgvpn_init_tty
+	[ -n "$WGVPN_TTY_FD" ] || die "Interactive menu requires a controlling terminal (stdin is not a tty and /dev/tty could not be opened). Use a direct subcommand instead (see --help)."
 	while true; do
 		echo
 		echo "WireGuard VPN Server Manager (v${WGVPN_VERSION})"
@@ -154,17 +156,17 @@ interactive_menu() {
 0.  Exit
 EOF
 		local choice
-		read -r -p "Select an option: " choice || { echo; exit 0; }
+		read -r -p "Select an option: " choice <&"$WGVPN_TTY_FD" || { echo; exit 0; }
 		case "$choice" in
 			1) cmd_status || true ;;
-			2) read -r -p "Client name: " n && peer_add "$n"; true ;;
+			2) prompt_read n "Client name: " && peer_add "$n"; true ;;
 			3) peer_list ;;
-			4) read -r -p "Client name: " n && peer_show "$n"; true ;;
-			5) read -r -p "Client name: " n && peer_qr "$n"; true ;;
-			6) read -r -p "Client name: " n && read -r -p "Output path [./${n}.conf]: " o && peer_export "$n" "${o:-./${n}.conf}"; true ;;
-			7) read -r -p "Client name: " n && peer_enable "$n"; true ;;
-			8) read -r -p "Client name: " n && peer_disable "$n"; true ;;
-			9) read -r -p "Client name: " n && confirm "Delete client '$n'?" n && peer_delete "$n"; true ;;
+			4) prompt_read n "Client name: " && peer_show "$n"; true ;;
+			5) prompt_read n "Client name: " && peer_qr "$n"; true ;;
+			6) prompt_read n "Client name: " && prompt_read o "Output path [./${n}.conf]: " && peer_export "$n" "${o:-./${n}.conf}"; true ;;
+			7) prompt_read n "Client name: " && peer_enable "$n"; true ;;
+			8) prompt_read n "Client name: " && peer_disable "$n"; true ;;
+			9) prompt_read n "Client name: " && confirm "Delete client '$n'?" n && peer_delete "$n"; true ;;
 			10) menu_site_peers || true ;;
 			11) menu_server_settings || true ;;
 			12) menu_routing_settings || true ;;
@@ -172,7 +174,7 @@ EOF
 			14) diagnostics_run || true ;;
 			15) cmd_logs || true ;;
 			16) backup_create || true ;;
-			17) read -r -p "Backup archive path: " a && backup_restore "$a"; true ;;
+			17) local a=""; prompt_read a "Backup archive path: " && backup_restore "$a"; true ;;
 			18) update_run || true ;;
 			19) cmd_repair || true ;;
 			20) menu_uninstall || true ;;
@@ -186,7 +188,7 @@ menu_uninstall() {
 	echo "1. Remove program, keep WireGuard config/backups"
 	echo "2. Complete removal (destroys clients and configuration)"
 	local c
-	read -r -p "Select [1-2]: " c
+	prompt_read c "Select [1-2]: "
 	case "$c" in
 		1) cmd_uninstall ;;
 		2) cmd_uninstall --full ;;
@@ -198,17 +200,18 @@ menu_site_peers() {
 	echo "Site-to-Site Peers"
 	echo "1. List   2. Add   3. Remove"
 	local c
-	read -r -p "Select: " c
+	prompt_read c "Select: "
 	case "$c" in
 		1) find "$WGVPN_PEERS_DIR" -maxdepth 1 -name '*.json' -exec basename {} .json \; 2>/dev/null ;;
 		2)
-			read -r -p "Peer name: " n
-			read -r -p "Peer public key: " pk
-			read -r -p "Remote subnets (comma-separated CIDRs): " nets
-			read -r -p "Endpoint (host:port, optional): " ep
+			local pk="" ep=""
+			prompt_read n "Peer name: "
+			prompt_read pk "Peer public key: "
+			prompt_read nets "Remote subnets (comma-separated CIDRs): "
+			prompt_read ep "Endpoint (host:port, optional): "
 			site_peer_add "$n" "$pk" "$nets" "$ep"
 			;;
-		3) read -r -p "Peer name: " n && site_peer_delete "$n" ;;
+		3) prompt_read n "Peer name: " && site_peer_delete "$n" ;;
 		*) warn "Invalid." ;;
 	esac
 }

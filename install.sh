@@ -21,6 +21,26 @@ WGVPN_BACKUP_DIR="${WGVPN_STATE_DIR}/backups"
 # that case, so this resolves to the current directory rather than erroring.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 
+# --- Coordinated EXIT handling (defined before lib/common.sh is even
+# available, since the fetch-bootstrap below needs cleanup registered
+# before common.sh can be sourced). A plain `trap foo EXIT` silently
+# replaces any trap set earlier - which previously meant this script's own
+# fetched-sources cleanup, common.sh's temp-file cleanup, and the rollback
+# reporter below were stomping on each other and only the last one ever
+# ran. wgvpn_on_exit lets every caller register a handler; common.sh
+# detects this is already defined and reuses it instead of installing its
+# own copy.
+WGVPN_EXIT_HOOKS=()
+wgvpn_on_exit() { WGVPN_EXIT_HOOKS+=("$1"); }
+wgvpn_run_exit_hooks() {
+	local ec=$? i hook
+	for (( i=${#WGVPN_EXIT_HOOKS[@]}-1; i>=0; i-- )); do
+		hook="${WGVPN_EXIT_HOOKS[i]}"
+		[ -n "$hook" ] && "$hook" "$ec"
+	done
+}
+trap wgvpn_run_exit_hooks EXIT
+
 # --- Bootstrap: fetch the repo if running via curl | bash (no local lib/) ---
 FETCHED_ROOT=""
 if [ ! -f "${SCRIPT_DIR}/lib/common.sh" ]; then
@@ -42,7 +62,7 @@ fi
 cleanup_fetched() {
 	if [ -n "$FETCHED_ROOT" ] && [ -d "$FETCHED_ROOT" ]; then rm -rf -- "$FETCHED_ROOT"; fi
 }
-trap cleanup_fetched EXIT
+wgvpn_on_exit cleanup_fetched
 
 # shellcheck source=/dev/null
 for f in common os validate network wireguard routing firewall peers backup diagnostics update uninstall; do
@@ -51,13 +71,13 @@ done
 
 INSTALL_FAILED_PHASE=""
 install_rollback() {
-	local ec=$?
+	local ec="${1:-$?}"
 	if [ "$ec" -ne 0 ] && [ -n "$INSTALL_FAILED_PHASE" ]; then
 		err "Installation failed during phase: ${INSTALL_FAILED_PHASE}"
 		err "See ${WGVPN_LOG_FILE} for details. No changes were made to an existing working configuration beyond what is logged."
 	fi
 }
-trap install_rollback EXIT
+wgvpn_on_exit install_rollback
 
 phase() { INSTALL_FAILED_PHASE="$1"; info "$1"; }
 
@@ -146,6 +166,7 @@ if [ "$already_installed" = "1" ] && [ "$ACTION" = "install" ]; then
 		info "Existing installation detected; non-interactive mode will repair in place."
 		ACTION="repair"
 	else
+		phase "Selecting installation action"
 		echo
 		echo "WireGuard-VPN-Server appears to already be installed."
 		echo "1. Open manager (sudo wg-vpn)"
@@ -153,7 +174,8 @@ if [ "$already_installed" = "1" ] && [ "$ACTION" = "install" ]; then
 		echo "3. Update to latest version"
 		echo "4. Reinstall (keeps existing clients where possible)"
 		echo "5. Cancel"
-		read -r -p "Select an option [1-5]: " existing_choice
+		existing_choice=""
+		prompt_read existing_choice "Select an option [1-5]: "
 		case "$existing_choice" in
 			1) exec "$WGVPN_BIN" ;;
 			2) ACTION="repair" ;;
@@ -204,6 +226,7 @@ fi
 
 # --- Interactive wizard -------------------------------------------------------
 if [ "$NONINTERACTIVE" != "1" ]; then
+	phase "Interactive configuration"
 	echo
 	echo "WireGuard VPN Server Manager - Installation Wizard"
 	echo "===================================================="
@@ -216,7 +239,7 @@ if [ "$NONINTERACTIVE" != "1" ]; then
 	echo "  4) IPv4 split tunnel"
 	echo "  5) IPv6 split tunnel"
 	echo "  6) IPv4 + IPv6 split tunnel"
-	read -r -p "Select [1-6, default 1]: " mchoice
+	prompt_read mchoice "Select [1-6, default 1]: "
 	case "${mchoice:-1}" in
 		1) OPT_MODE="full4" ;;
 		2) OPT_MODE="full6" ;;
@@ -227,16 +250,16 @@ if [ "$NONINTERACTIVE" != "1" ]; then
 		*) OPT_MODE="full4" ;;
 	esac
 
-	read -r -p "WireGuard UDP port [${OPT_PORT}]: " v; OPT_PORT="${v:-$OPT_PORT}"
+	prompt_read v "WireGuard UDP port [${OPT_PORT}]: "; OPT_PORT="${v:-$OPT_PORT}"
 	valid_port "$OPT_PORT" || die "Invalid port: $OPT_PORT"
 
-	read -r -p "Client DNS (comma-separated, blank for none) [${OPT_DNS}]: " v; OPT_DNS="${v-$OPT_DNS}"
+	prompt_read v "Client DNS (comma-separated, blank for none) [${OPT_DNS}]: "; OPT_DNS="${v-$OPT_DNS}"
 
 	echo
 	echo "Forwarding mode:"
 	echo "  1) NAT / Masquerade (typical road-warrior VPN)"
 	echo "  2) Routed / No-NAT (requires upstream routes already configured)"
-	read -r -p "Select [1-2, default 1]: " fchoice
+	prompt_read fchoice "Select [1-2, default 1]: "
 	[ "${fchoice:-1}" = "2" ] && OPT_FORWARD_MODE="routed" || OPT_FORWARD_MODE="nat"
 
 	confirm "Enable per-client preshared keys (recommended)?" y && OPT_USE_PSK=1 || OPT_USE_PSK=0
@@ -285,7 +308,7 @@ if [ -z "$OPT_ENDPOINT" ]; then
 	if [ -z "$OPT_ENDPOINT" ]; then OPT_ENDPOINT="$(net_public_ipv4 || true)"; fi
 	if [ -z "$OPT_ENDPOINT" ]; then die "Could not auto-detect a public endpoint. Pass --endpoint=<ip-or-hostname>."; fi
 	if [ "$NONINTERACTIVE" != "1" ]; then
-		read -r -p "Detected public endpoint [${OPT_ENDPOINT}] (press Enter to accept, or type a different host/IP): " v
+		prompt_read v "Detected public endpoint [${OPT_ENDPOINT}] (press Enter to accept, or type a different host/IP): "
 		OPT_ENDPOINT="${v:-$OPT_ENDPOINT}"
 	fi
 fi

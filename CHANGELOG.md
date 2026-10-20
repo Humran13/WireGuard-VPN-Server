@@ -2,6 +2,48 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.0.1] - 2026-10-20
+
+Bug-fix release.
+
+### Fixed
+- Fixed interactive installation when using the documented
+  `curl -fsSL ... | sudo bash` command. The wizard's prompts (routing mode,
+  port, DNS, forwarding mode, PSK/isolation confirmations, endpoint
+  override, and the existing-installation action menu) now read from the
+  controlling terminal (`/dev/tty`) instead of consuming the installer's
+  own piped source as if it were typed answers. Previously this caused
+  prompts such as the port question to silently receive a line of install
+  script source (eg. `# --- Validate / derive settings ... ---`) and fail
+  with `Invalid port`.
+- Corrected `confirm()` in `lib/common.sh`, which used `[ -t 0 ]` to decide
+  whether a prompt could be asked interactively. That check is wrong under
+  `curl | bash`, since stdin is the script pipe even though the user has a
+  real controlling terminal; `confirm()` now uses the same terminal-input
+  abstraction (`prompt_read`/`wgvpn_init_tty`) as the rest of the installer.
+- Corrected installer failure-phase reporting: a failure during the
+  interactive wizard was previously blamed on the earlier "Detecting
+  operating system" phase (the last phase marker set before the wizard
+  ran). The wizard now sets its own phase ("Interactive configuration" /
+  "Selecting installation action") so failures are attributed correctly.
+- Fixed an `EXIT` trap collision: `install.sh`'s fetched-sources cleanup,
+  `lib/common.sh`'s temporary-file cleanup, and the installer's rollback/
+  failure reporter were each registered with a plain `trap ... EXIT`,
+  which silently replaces any trap set earlier - so only the last one
+  ever ran. In practice this meant fetched source directories
+  (`/tmp/wgvpn-src.*` from the `curl | bash` bootstrap) and other internal
+  temp files were never cleaned up. All three are now registered through
+  a single coordinated exit-hook stack (`wgvpn_on_exit`) and all run.
+
+### Added
+- Regression test suite (`tests/interactive_install.bats`,
+  `tests/pty_harness.py`) that reproduces the real failure condition: a
+  script's own source arriving over a non-seekable pipe (as with
+  `curl | bash`) while a separate controlling terminal supplies answers.
+  Covers prompt answers taking precedence over piped source, defaults on
+  blank input, `confirm()` behavior under a piped stdin, and a fast,
+  non-hanging failure when no controlling terminal is available at all.
+
 ## [1.0.0] - 2026-09-23
 
 Initial release.
