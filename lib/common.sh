@@ -100,14 +100,26 @@ wgvpn_init_tty() {
 	WGVPN_TTY_CHECKED=1
 	if [ -t 0 ]; then
 		WGVPN_TTY_FD=0
-	elif exec 3<>/dev/tty 2>/dev/null; then
+	# `exec` with no command applies ALL of its redirections to the
+	# current shell permanently (that's what makes fd 3 stay open for
+	# later reads) - including `2>/dev/null`, which would otherwise
+	# silently and PERMANENTLY redirect this script's own stderr to
+	# /dev/null for the rest of execution. Since `read -p` prompts, and
+	# every warn()/err()/die() message, are written to stderr, that one
+	# throwaway-looking redirect was enough to make every prompt after
+	# the first silently vanish (and every later warning/error with it)
+	# while the script kept working correctly underneath - indistinguishable
+	# from a hang. Wrapping the exec in a brace group scopes `2>/dev/null`
+	# to just this attempt (bash saves/restores fd 2 around a compound
+	# command), while the fd 3 it opens still persists as intended.
+	elif { exec 3<>/dev/tty; } 2>/dev/null; then
 		WGVPN_TTY_FD=3
 		wgvpn_on_exit wgvpn_close_tty
 	fi
 }
 # shellcheck disable=SC2329  # invoked indirectly via wgvpn_on_exit
 wgvpn_close_tty() {
-	if [ "$WGVPN_TTY_FD" = "3" ]; then exec 3<&- 2>/dev/null || true; fi
+	if [ "$WGVPN_TTY_FD" = "3" ]; then { exec 3<&-; } 2>/dev/null || true; fi
 }
 
 # prompt_read <var> <prompt-text>
