@@ -88,7 +88,20 @@ sudo bash tests/e2e/tunnel_test.sh --mode=full4 --use-psk=1
 ```
 
 Pass `--keep` to leave the namespaces and generated files in place for
-manual inspection (`ip netns exec <ns> ...`) instead of tearing them down.
+manual inspection (`ip netns exec <ns> ...`) instead of tearing them down, or
+`--simulate-hostile-fw` to pre-install a Docker-like `FORWARD` chain (with
+`DOCKER-USER`/`DOCKER-FORWARD` jumps and a `DROP` policy) in the server
+namespace before running the installer - verifying the full real
+install -> handshake -> internet -> DNS path survives a host that already
+has a restrictive forwarding policy, not just a clean one.
+
+`tests/e2e/firewall_test.sh` covers that same compatibility fix at a finer
+grain, isolated per-scenario in its own network namespace: a clean host, an
+existing `FORWARD DROP` policy, Docker-like `DOCKER-USER`/`DOCKER-FORWARD`
+chains, coexistence with OpenVPN-style rules, idempotency across repeated
+`fw_apply` calls, cleanup removing only project-owned rules, diagnostics
+signals, public-interface handling (including an interface change), and NAT
+rule correctness. Run it the same way: `sudo bash tests/e2e/firewall_test.sh`.
 
 All resources are created inside dedicated namespaces and cleaned up
 afterward (unless `--keep` is used); the test never touches the host's own

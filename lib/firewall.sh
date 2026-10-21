@@ -32,6 +32,15 @@ fw_apply() {
 
 	mkdir -p "$(dirname "$WGVPN_FW_STATE")"
 
+	# Read back any previously-recorded compat-rule interfaces BEFORE the
+	# state file gets truncated below, so an interface change can be
+	# reconciled (see fw_compat_forward_apply).
+	local prev_compat_wg="" prev_compat_pub=""
+	if [ -f "$WGVPN_FW_STATE" ]; then
+		prev_compat_wg="$(sed -n 's/^compat_wg_iface=//p' "$WGVPN_FW_STATE" 2>/dev/null | head -n1)"
+		prev_compat_pub="$(sed -n 's/^compat_pub_iface=//p' "$WGVPN_FW_STATE" 2>/dev/null | head -n1)"
+	fi
+
 	if [ "$backend" = "nftables" ]; then
 		echo "backend=nftables" >"$WGVPN_FW_STATE"
 		fw_nft_apply "$port" "$mode" "$pub_iface" "$v4_subnet" "$v6_subnet" "$isolation"
@@ -39,6 +48,18 @@ fw_apply() {
 		echo "backend=iptables" >"$WGVPN_FW_STATE"
 		fw_iptables_apply "$port" "$mode" "$pub_iface" "$v4_subnet" "$v6_subnet" "$isolation"
 	fi
+
+	# Independent of the backend chosen above for the project's own
+	# dedicated tables: a project-owned nftables chain hooked to "forward"
+	# does NOT guarantee WireGuard traffic is ultimately accepted. nftables
+	# evaluates every base chain hooked to the same point independently, in
+	# priority order - an `accept` verdict in one base chain only ends THAT
+	# chain's processing and lets the packet continue to the next hooked
+	# chain (eg. the standard `ip filter FORWARD` chain Docker/OpenVPN/ufw/
+	# administrators populate via `iptables`), which can still drop it under
+	# its own policy. Ensure narrow, project-owned ACCEPT rules exist at the
+	# top of that chain too, whenever `iptables` is available.
+	fw_compat_forward_apply "$WGVPN_IFACE" "$pub_iface" "$prev_compat_wg" "$prev_compat_pub"
 
 	if fw_ufw_active; then
 		info "UFW is active; adding an allow rule for the WireGuard port."
@@ -76,6 +97,103 @@ fw_nft_apply() {
 			nft add rule ip6 "${WGVPN_NFT_TABLE}_nat6" postrouting ip6 saddr "$v6_subnet" oifname "$pub_iface" masquerade comment "\"$WGVPN_FW_COMMENT\""
 		fi
 	fi
+}
+
+# fw_compat_forward_apply <wg_iface> <pub_iface> [prev_wg_iface] [prev_pub_iface]
+# Ensures two narrow, project-owned ACCEPT rules exist at the TOP of the
+# host's real `iptables` FORWARD chain (position 1, so they are evaluated
+# before any Docker DOCKER-USER/DOCKER-FORWARD jump and before the chain's
+# own default policy applies): wg-iface -> pub-iface unconditionally, and
+# pub-iface -> wg-iface for RELATED,ESTABLISHED traffic only. This is the
+# chain Docker/OpenVPN/ufw/administrators actually populate; `iptables` on
+# modern Ubuntu is iptables-nft, so this reaches the same underlying
+# nftables `ip filter FORWARD` chain regardless of whether it was created
+# by legacy iptables, iptables-nft, or raw nft rules.
+# No-ops (with a warning) if `iptables` isn't installed at all - there is
+# no reliable, universal way to locate an admin-defined custom nft chain
+# in that case, and without iptables, Docker/OpenVPN (the common cause)
+# cannot be present either.
+fw_compat_forward_apply() {
+	local wg_iface="$1" pub_iface="$2" prev_wg="${3:-}" prev_pub="${4:-}"
+	if ! command_exists iptables; then
+		warn "iptables not found; skipping FORWARD-chain compatibility rules for restrictive host firewalls (eg. Docker/OpenVPN). If clients handshake but cannot reach the internet, check 'iptables -L FORWARD -v' or 'nft list ruleset' manually for a conflicting DROP policy."
+		return 0
+	fi
+
+	# Reconcile a changed interface: remove any previously-recorded compat
+	# rule for a different wg/public interface pair first, so repair/update
+	# never leaves a stale rule pointing at an old interface.
+	if [ -n "$prev_wg" ] && [ -n "$prev_pub" ] && { [ "$prev_wg" != "$wg_iface" ] || [ "$prev_pub" != "$pub_iface" ]; }; then
+		iptables -D FORWARD -i "$prev_wg" -o "$prev_pub" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+		iptables -D FORWARD -i "$prev_pub" -o "$prev_wg" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+		if command_exists ip6tables; then
+			ip6tables -D FORWARD -i "$prev_wg" -o "$prev_pub" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+			ip6tables -D FORWARD -i "$prev_pub" -o "$prev_wg" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+		fi
+	fi
+
+	iptables -C FORWARD -i "$wg_iface" -o "$pub_iface" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null \
+		|| iptables -I FORWARD 1 -i "$wg_iface" -o "$pub_iface" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT
+	iptables -C FORWARD -i "$pub_iface" -o "$wg_iface" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null \
+		|| iptables -I FORWARD 1 -i "$pub_iface" -o "$wg_iface" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT
+
+	if command_exists ip6tables; then
+		ip6tables -C FORWARD -i "$wg_iface" -o "$pub_iface" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null \
+			|| ip6tables -I FORWARD 1 -i "$wg_iface" -o "$pub_iface" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+		ip6tables -C FORWARD -i "$pub_iface" -o "$wg_iface" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null \
+			|| ip6tables -I FORWARD 1 -i "$pub_iface" -o "$wg_iface" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+	fi
+
+	{
+		echo "compat_wg_iface=${wg_iface}"
+		echo "compat_pub_iface=${pub_iface}"
+	} >>"$WGVPN_FW_STATE"
+}
+
+# fw_compat_forward_remove: removes only the two project-owned compatibility
+# rules recorded in $WGVPN_FW_STATE. Idempotent - safe to call when they
+# were never installed (eg. iptables wasn't present) or already removed.
+fw_compat_forward_remove() {
+	[ -f "$WGVPN_FW_STATE" ] || return 0
+	command_exists iptables || return 0
+	local wg_iface pub_iface
+	wg_iface="$(sed -n 's/^compat_wg_iface=//p' "$WGVPN_FW_STATE" 2>/dev/null | head -n1)"
+	pub_iface="$(sed -n 's/^compat_pub_iface=//p' "$WGVPN_FW_STATE" 2>/dev/null | head -n1)"
+	[ -n "$wg_iface" ] && [ -n "$pub_iface" ] || return 0
+
+	iptables -D FORWARD -i "$wg_iface" -o "$pub_iface" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+	iptables -D FORWARD -i "$pub_iface" -o "$wg_iface" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+	if command_exists ip6tables; then
+		ip6tables -D FORWARD -i "$wg_iface" -o "$pub_iface" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+		ip6tables -D FORWARD -i "$pub_iface" -o "$wg_iface" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null || true
+	fi
+}
+
+# fw_compat_forward_status <wg_iface>: prints "present" or "absent" depending
+# on whether BOTH project-owned compatibility rules currently exist in the
+# host's real iptables FORWARD chain. Prints "unavailable" if iptables isn't
+# installed (nothing to check/fix via this mechanism).
+fw_compat_forward_status() {
+	local wg_iface="$1" pub_iface="${2:-}"
+	command_exists iptables || { echo "unavailable"; return 0; }
+	if [ -z "$pub_iface" ]; then
+		pub_iface="$(sed -n 's/^compat_pub_iface=//p' "$WGVPN_FW_STATE" 2>/dev/null | head -n1)"
+	fi
+	[ -n "$pub_iface" ] || { echo "absent"; return 0; }
+	if iptables -C FORWARD -i "$wg_iface" -o "$pub_iface" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null \
+		&& iptables -C FORWARD -i "$pub_iface" -o "$wg_iface" -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null; then
+		echo "present"
+	else
+		echo "absent"
+	fi
+}
+
+# fw_host_forward_policy: prints the effective default policy of the host's
+# real iptables FORWARD chain (ACCEPT/DROP/REJECT), or "unknown" if it
+# cannot be determined (eg. iptables not installed).
+fw_host_forward_policy() {
+	command_exists iptables || { echo "unknown"; return 0; }
+	iptables -S FORWARD 2>/dev/null | awk '/^-P FORWARD/{print $3; found=1} END{if(!found) print "unknown"}'
 }
 
 fw_nft_remove() {
@@ -150,6 +268,10 @@ fw_remove() {
 		nftables) fw_nft_remove ;;
 		iptables) fw_iptables_remove ;;
 	esac
+	# The FORWARD-chain compatibility rules are installed via `iptables`
+	# regardless of which backend was chosen above for the project's own
+	# dedicated tables, so they're always removed here too.
+	fw_compat_forward_remove
 	if [ -f "$WGVPN_FW_STATE" ] && grep -q '^ufw=1' "$WGVPN_FW_STATE" && command_exists ufw; then
 		local port
 		port="$(json_get "$WGVPN_CONF" wg_port)"
@@ -173,5 +295,7 @@ fw_status_report() {
 			|| iptables -C FORWARD -o "$WGVPN_IFACE" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null; } \
 			&& echo "forward_rule=present" || echo "forward_rule=absent"
 	fi
+	echo "host_forward_policy=$(fw_host_forward_policy)"
+	echo "compat_forward_rule=$(fw_compat_forward_status "$WGVPN_IFACE")"
 	fw_ufw_active && echo "ufw=active" || echo "ufw=inactive"
 }

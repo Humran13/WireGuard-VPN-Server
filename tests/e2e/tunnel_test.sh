@@ -39,11 +39,13 @@ set -euo pipefail
 KEEP=0
 MODE="full4"
 USE_PSK=1
+SIMULATE_HOSTILE_FW=0
 for a in "$@"; do
 	case "$a" in
 		--keep) KEEP=1 ;;
 		--mode=*) MODE="${a#*=}" ;;
 		--use-psk=*) USE_PSK="${a#*=}" ;;
+		--simulate-hostile-fw) SIMULATE_HOSTILE_FW=1 ;;
 		*) echo "unknown arg: $a" >&2; exit 2 ;;
 	esac
 done
@@ -149,6 +151,17 @@ WGVPN_WG_DIR="/etc/wireguard"
 WGVPN_STATE_DIR="/etc/wireguard-vpn-server"
 WGVPN_BIN="/usr/local/bin/wg-vpn"
 WGVPN_IFACE="wg0"
+
+if [ "$SIMULATE_HOSTILE_FW" = "1" ]; then
+	echo "=== simulating a pre-existing restrictive host firewall (Docker-like FORWARD DROP) in $NS_SRV ==="
+	ip netns exec "$NS_SRV" iptables -N DOCKER-USER
+	ip netns exec "$NS_SRV" iptables -N DOCKER-FORWARD
+	ip netns exec "$NS_SRV" iptables -A DOCKER-USER -j RETURN
+	ip netns exec "$NS_SRV" iptables -A DOCKER-FORWARD -j RETURN
+	ip netns exec "$NS_SRV" iptables -A FORWARD -j DOCKER-USER
+	ip netns exec "$NS_SRV" iptables -A FORWARD -j DOCKER-FORWARD
+	ip netns exec "$NS_SRV" iptables -P FORWARD DROP
+fi
 
 INSTALL_ARGS=(--non-interactive --assume-yes --mode="$MODE" --public-iface=eth0 \
 	--endpoint="$SRV_PUB_IP" --port=51820 --dns="$DNS_IP")

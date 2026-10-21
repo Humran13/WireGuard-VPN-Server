@@ -236,10 +236,35 @@ diagnostics_run() {
 		diag_report FAIL "forward_mode is 'nat' but no masquerade rule was found - clients will not reach the internet through this server."
 	fi
 	if [[ "$fwreport" == *"forward_rule=present"* ]]; then
-		diag_report PASS "Project firewall FORWARD rule for ${WGVPN_IFACE} present"
+		diag_report PASS "Project nftables forwarding chain for ${WGVPN_IFACE} exists"
 	else
-		diag_report WARN "No project FORWARD rule found for ${WGVPN_IFACE} - traffic routed through the tunnel may be dropped."
+		diag_report WARN "No project nftables forwarding chain found for ${WGVPN_IFACE}."
 	fi
+
+	# The project's own forwarding chain existing does NOT guarantee traffic
+	# is ultimately accepted: nftables evaluates every base chain hooked to
+	# "forward" independently, in priority order, so a host-level chain
+	# with its own DROP policy (eg. Docker's, or an administrator's) can
+	# still drop the same packets after the project's chain already
+	# accepted them. Check the actual effective path instead.
+	local host_policy compat_status
+	host_policy="$(awk -F= '/^host_forward_policy=/{print $2}' <<<"$fwreport")"
+	compat_status="$(awk -F= '/^compat_forward_rule=/{print $2}' <<<"$fwreport")"
+	case "$host_policy" in
+		ACCEPT)
+			diag_report PASS "WireGuard traffic is permitted through host FORWARD chain (policy ACCEPT)"
+			;;
+		DROP|REJECT)
+			if [ "$compat_status" = "present" ]; then
+				diag_report PASS "WireGuard traffic is permitted through host FORWARD chain (policy ${host_policy}, project compatibility rules present)"
+			else
+				diag_report WARN "Host FORWARD policy is ${host_policy} and required WireGuard compatibility rules are missing - clients may handshake but be unable to reach the internet. Run 'sudo wg-vpn repair' to install them."
+			fi
+			;;
+		*)
+			diag_report WARN "Could not determine the host's effective FORWARD policy (iptables unavailable?) - if clients handshake but cannot reach the internet, check 'iptables -L FORWARD -v' or 'nft list ruleset' manually for a conflicting DROP policy (eg. from Docker)."
+			;;
+	esac
 
 	command_exists qrencode && diag_report PASS "qrencode available for QR codes" || diag_report WARN "qrencode not installed (QR export unavailable)"
 

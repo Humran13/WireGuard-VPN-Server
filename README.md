@@ -120,7 +120,16 @@ The installer detects nftables or iptables and creates rules in dedicated,
 clearly-named tables/comments (`wireguard-vpn-server`) — it never flushes or
 replaces your existing firewall. If UFW is active, it adds an allow rule for
 the WireGuard port and leaves the rest of your UFW configuration untouched.
-Uninstalling removes only the rules this project created.
+
+It also safely coexists with hosts that already have a restrictive forwarding
+policy — eg. Docker, OpenVPN, or an administrator-configured `FORWARD` chain
+with a default `DROP` policy. On those hosts, two narrow, clearly-commented
+rules are added at the top of the real forwarding chain (WireGuard traffic
+out, and `RELATED,ESTABLISHED` return traffic back in) so tunnel traffic
+isn't silently dropped by a policy outside this project's own tables — every
+other rule (Docker's, OpenVPN's, UFW's, yours) is left exactly as it was.
+`sudo wg-vpn repair` detects and fixes this automatically if it's ever
+missing. Uninstalling removes only the rules this project created.
 
 ## IPv4 / IPv6 behavior
 

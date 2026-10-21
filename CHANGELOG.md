@@ -2,6 +2,47 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.0.3] - 2026-10-22
+
+Bug-fix release: handles restrictive host `FORWARD` policies (Docker,
+OpenVPN, administrator-configured firewalls).
+
+### Fixed
+- **Clients could handshake but had no internet access on hosts with an
+  existing restrictive `FORWARD` policy** (confirmed on Ubuntu 24.04 with
+  Docker + OpenVPN installed, `FORWARD` policy `DROP`). The project's own
+  nftables forwarding chain accepting WireGuard traffic does not guarantee
+  that traffic is ultimately forwarded: nftables evaluates every base chain
+  hooked to the same point ("forward") independently, in priority order, so
+  a separate host-level chain (eg. the one `iptables`/Docker/OpenVPN
+  populate) with its own `DROP` policy can still drop the same packets
+  after the project's chain already accepted them. Diagnostics previously
+  reported everything as healthy in this exact situation.
+  Fixed by additionally installing two narrow, project-owned rules at the
+  top of the host's real `iptables` `FORWARD` chain (the chain Docker/
+  OpenVPN/ufw/administrators actually populate): the configured WireGuard
+  interface to the public interface (`ACCEPT`), and the reverse direction
+  restricted to `RELATED,ESTABLISHED` traffic only. Existing Docker,
+  OpenVPN, UFW, and administrator rules are never modified or reordered.
+  `sudo wg-vpn repair` detects and installs these automatically on an
+  existing installation; uninstall removes only these project-owned rules.
+  Idempotent (safe to repeat), and reconciles correctly if the configured
+  public interface ever changes.
+- `wg-vpn diagnostics` now checks the host's actual effective `FORWARD`
+  policy and whether these compatibility rules are present, instead of
+  only checking that the project's own forwarding chain exists (which,
+  as above, does not by itself prove traffic gets through).
+
+### Added
+- `tests/e2e/firewall_test.sh`: isolated-namespace regression coverage for
+  a clean host, an existing `FORWARD DROP` policy, Docker-like chains,
+  OpenVPN coexistence, idempotency, cleanup, diagnostics signals,
+  public-interface handling (including an interface change), and NAT rule
+  correctness.
+- `tests/e2e/tunnel_test.sh --simulate-hostile-fw`: runs the full real
+  install → client handshake → internet → DNS path against a
+  pre-existing Docker-like restrictive `FORWARD` chain.
+
 ## [1.0.2] - 2026-10-21
 
 Bug-fix release: a real production VPN-connectivity investigation, plus a
