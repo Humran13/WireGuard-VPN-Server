@@ -164,8 +164,14 @@ fw_status_report() {
 	echo "backend=${backend}"
 	if [ "$backend" = "nftables" ]; then
 		nft list table inet "$WGVPN_NFT_TABLE" 2>/dev/null | grep -q "$WGVPN_FW_COMMENT" && echo "port_rule=present" || echo "port_rule=absent"
+		nft list table ip "${WGVPN_NFT_TABLE}_nat" 2>/dev/null | grep -q "$WGVPN_FW_COMMENT" && echo "nat_rule=present" || echo "nat_rule=absent"
+		nft list table inet "${WGVPN_NFT_TABLE}_fwd" 2>/dev/null | grep -q "$WGVPN_FW_COMMENT" && echo "forward_rule=present" || echo "forward_rule=absent"
 	elif [ "$backend" = "iptables" ]; then
 		iptables -C INPUT -p udp -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null && echo "port_rule=present" || echo "port_rule=absent"
+		iptables -t nat -C POSTROUTING -m comment --comment "$WGVPN_FW_COMMENT" -j MASQUERADE 2>/dev/null && echo "nat_rule=present" || echo "nat_rule=absent"
+		{ iptables -C FORWARD -i "$WGVPN_IFACE" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null \
+			|| iptables -C FORWARD -o "$WGVPN_IFACE" -m comment --comment "$WGVPN_FW_COMMENT" -j ACCEPT 2>/dev/null; } \
+			&& echo "forward_rule=present" || echo "forward_rule=absent"
 	fi
 	fw_ufw_active && echo "ufw=active" || echo "ufw=inactive"
 }

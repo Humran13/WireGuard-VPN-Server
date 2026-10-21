@@ -35,6 +35,7 @@ Commands:
   enable-client <name>      Enable a client
   disable-client <name>     Disable (revoke) a client
   delete-client <name>      Delete a client permanently
+  test-client <name>        Check one client's server-side connectivity state
   diagnostics                Run diagnostics
   logs                      Show recent service logs
   restart                   Restart WireGuard service
@@ -113,6 +114,22 @@ cmd_repair() {
 	ok "Repair complete."
 }
 
+cmd_test_client() {
+	local name="$1"
+	peer_exists "$name" || die "No such client: $name"
+	echo "WireGuard VPN Server - Client Connectivity Check"
+	echo "===================================================="
+	echo "Server endpoint: $(json_get "$WGVPN_CONF" endpoint)"
+	echo "Server public key: $(json_get "$WGVPN_CONF" server_public_key)"
+	echo
+	diag_client_report "$name"
+	echo
+	echo "Note: this checks server-side state only (is the client loaded, has"
+	echo "it ever handshaken, recent traffic). It cannot see the client device's"
+	echo "own network, nor any firewall outside this server (eg. a VPS"
+	echo "provider's security group/cloud firewall blocking inbound UDP)."
+}
+
 cmd_uninstall() {
 	local mode="program"
 	if [ "${1:-}" = "--full" ]; then mode="full"; fi
@@ -152,6 +169,7 @@ interactive_menu() {
 18. Update
 19. Repair
 20. Uninstall
+21. Test Client Connectivity
 
 0.  Exit
 EOF
@@ -178,6 +196,7 @@ EOF
 			18) update_run || true ;;
 			19) cmd_repair || true ;;
 			20) menu_uninstall || true ;;
+			21) prompt_read n "Client name: " && cmd_test_client "$n"; true ;;
 			0) exit 0 ;;
 			*) warn "Invalid selection." ;;
 		esac
@@ -274,6 +293,7 @@ main() {
 		enable-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} enable-client <name>"; peer_enable "$1" ;;
 		disable-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} disable-client <name>"; peer_disable "$1" ;;
 		delete-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} delete-client <name>"; peer_delete "$1" ;;
+		test-client) [ $# -ge 1 ] || die "Usage: ${WGVPN_PROG} test-client <name>"; cmd_test_client "$1" ;;
 		diagnostics) diagnostics_run ;;
 		logs) cmd_logs ;;
 		restart) wg_service_restart && ok "Restarted." ;;
