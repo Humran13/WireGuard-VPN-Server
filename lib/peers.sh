@@ -41,7 +41,8 @@ peer_add() {
 	if [ "$use_psk" != "false" ]; then psk="$(wg_genpsk)"; fi
 
 	local allowed
-	allowed="$(routing_mode_allowed_ips "$mode" "$v4nets" "$v6nets")" || die "Invalid connection mode: $mode"
+	allowed="$(routing_mode_allowed_ips "$mode" "$v4nets" "$v6nets")" \
+		|| die "Invalid connection mode '$mode', or a split-tunnel mode was used without the required network(s) (pass them as the ipv4_nets/ipv6_nets arguments)."
 
 	local f
 	f="$(peer_file "$name")"

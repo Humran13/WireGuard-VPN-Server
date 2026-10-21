@@ -38,6 +38,18 @@ setup() {
 	[ "$status" -ne 0 ]
 }
 
+@test "routing_mode_allowed_ips rejects split modes with no networks given" {
+	# An empty AllowedIPs is rejected outright by wg/wg-quick ("Line
+	# unrecognized: AllowedIPs="), so this must fail here rather than
+	# silently producing a client config that can never come up.
+	run routing_mode_allowed_ips split4
+	[ "$status" -ne 0 ]
+	run routing_mode_allowed_ips split6
+	[ "$status" -ne 0 ]
+	run routing_mode_allowed_ips split-dual
+	[ "$status" -ne 0 ]
+}
+
 @test "routing_mode_requires_ipv6 correctly flags modes" {
 	run routing_mode_requires_ipv6 full6; [ "$status" -eq 0 ]
 	run routing_mode_requires_ipv6 split6; [ "$status" -eq 0 ]

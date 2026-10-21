@@ -22,13 +22,18 @@ routing_mode_allowed_ips() {
 		full4) echo "0.0.0.0/0" ;;
 		full6) echo "::/0" ;;
 		full-dual) echo "0.0.0.0/0,::/0" ;;
-		split4) echo "$v4" ;;
-		split6) echo "$v6" ;;
+		# A split mode with no networks given would otherwise silently
+		# produce an empty AllowedIPs, which wg/wg-quick reject outright
+		# ("Line unrecognized: AllowedIPs=") - fail clearly instead.
+		split4) [ -n "$v4" ] || return 1; echo "$v4" ;;
+		split6) [ -n "$v6" ] || return 1; echo "$v6" ;;
 		split-dual)
 			if [ -n "$v4" ] && [ -n "$v6" ]; then
 				echo "${v4},${v6}"
-			else
+			elif [ -n "$v4" ] || [ -n "$v6" ]; then
 				echo "${v4}${v6}"
+			else
+				return 1
 			fi
 			;;
 		*) return 1 ;;

@@ -174,24 +174,43 @@ wg_service_status() {
 }
 
 wg_service_restart() {
-	if ! wg_systemd_available; then
-		warn "systemd is not running in this environment; cannot restart the service."
-		return 0
+	if wg_systemd_available; then
+		systemctl restart "wg-quick@${WGVPN_IFACE}"
+		return $?
 	fi
-	systemctl restart "wg-quick@${WGVPN_IFACE}"
+	# No systemd (containers, CI, some minimal/LXC-based VPS images): fall
+	# back to driving wg-quick directly rather than silently doing nothing.
+	# Previously this just warned and returned success, which meant every
+	# caller that falls back to wg_service_restart on a failed `wg
+	# syncconf` - ie. every add/remove-client call - silently left the
+	# live interface exactly as it was, while still reporting the client
+	# as added/removed/enabled/disabled. The only visible symptom was the
+	# tunnel simply not working for that client, with no error anywhere.
+	if wg_iface_up; then
+		wg-quick down "$WGVPN_IFACE" >/dev/null 2>&1 || true
+	fi
+	wg-quick up "$WGVPN_IFACE"
+}
+
+# wg_iface_up: 0 if the WireGuard interface currently exists on this host,
+# independent of whether anything (systemd or otherwise) is "managing" it.
+wg_iface_up() {
+	ip link show "$WGVPN_IFACE" >/dev/null 2>&1
 }
 
 # wg_apply_peer_live: sync running interface without full restart (used by add/remove client)
 wg_apply_peer_live() {
-	if [ "$(wg_service_status)" = "active" ]; then
-		wg syncconf "$WGVPN_IFACE" <(wg-quick strip "$WGVPN_IFACE") 2>/dev/null || wg_service_restart
+	if ! wg_iface_up; then
+		warn "WireGuard interface ${WGVPN_IFACE} is not currently up; this change is saved but will only take effect once the interface is started (eg. 'sudo wg-vpn repair', or a reboot)."
+		return 0
 	fi
+	wg syncconf "$WGVPN_IFACE" <(wg-quick strip "$WGVPN_IFACE") 2>/dev/null || wg_service_restart
 }
 
 # wg_revoke_peer_live <pubkey>: immediately removes a peer from the live interface
 wg_revoke_peer_live() {
 	local pubkey="$1"
-	if [ "$(wg_service_status)" = "active" ]; then
+	if wg_iface_up; then
 		wg set "$WGVPN_IFACE" peer "$pubkey" remove 2>/dev/null || true
 	fi
 }

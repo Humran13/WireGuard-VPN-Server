@@ -61,25 +61,43 @@ rather than failing.
 
 ## 4. Real WireGuard networking test
 
-A genuine end-to-end test using Linux network namespaces (`ip netns`) on a
-host where the WireGuard kernel module is actually loaded — not just
-containers sharing a kernel. It creates isolated namespaces for a server and
-two clients, brings up real `wg0` interfaces, and verifies:
+`tests/e2e/tunnel_test.sh` is a genuine end-to-end test using Linux network
+namespaces (`ip netns`) on a host where the WireGuard kernel module is
+actually available (not just a container sharing a kernel). It builds three
+namespaces - a server, a road-warrior client, and a router namespace
+standing in for "the public internet" (so traffic between them is genuinely
+routed, not exchanged over one shared link) - runs this project's *real*
+`install.sh` and `wg-vpn add-client`/`export` inside the server namespace,
+imports the generated client config in the client namespace exactly as a
+real WireGuard client would, and verifies with real packets:
 
-- Real Noise-protocol handshakes (with a preshared key) complete
-- Encrypted ping traffic crosses the tunnel
-- NAT/masquerade forwarding works with the server acting as gateway
-- Live peer revocation (`wg set ... remove`) immediately cuts off a peer
-- The tunnel re-establishes after a full interface + config restart,
-  mirroring what `wg-quick`/`systemctl restart wg-quick@wg0` does
+- A real Noise-protocol handshake completes on both sides
+- The client can ping the server's own WireGuard address
+- The client can reach an address that only exists behind the server's
+  NAT/forward path (full-tunnel internet access through the VPN)
+- A DNS query against the installer-configured DNS server resolves
+  through the tunnel
+- `PersistentKeepalive` is present in the generated client config
+- The client config's `PresharedKey` presence matches the `use_psk` setting
+
+Run it (needs root and a kernel with WireGuard support - `ip link add test0
+type wireguard` must succeed):
+
+```bash
+sudo bash tests/e2e/tunnel_test.sh --mode=full4 --use-psk=1
+```
+
+Pass `--keep` to leave the namespaces and generated files in place for
+manual inspection (`ip netns exec <ns> ...`) instead of tearing them down.
 
 All resources are created inside dedicated namespaces and cleaned up
-afterward; the test never touches the host's own networking.
+afterward (unless `--keep` is used); the test never touches the host's own
+networking.
 
-**Not covered:** live IPv6 tunnel traffic (no IPv6-capable test host was
-available for this), and the Ubuntu 18.04 WireGuard-PPA/DKMS fallback code
-path specifically (the 18.04 test image had the native `wireguard` package
-available, so only the primary install path was exercised there).
+**Not covered:** live IPv6 tunnel traffic, the Ubuntu 18.04
+WireGuard-PPA/DKMS fallback code path, and live peer revocation / restart
+persistence under real traffic (covered functionally by `tests/peers.bats`
+and the install-matrix idempotency checks, but not with a live tunnel).
 
 ## Idempotency, backup/restore, and uninstall
 

@@ -69,7 +69,7 @@ cmd_status() {
 	echo "Configured peers: ${n}"
 	echo "Forwarding:       $(net_sysctl_forwarding_status)"
 	echo
-	if [ "$(wg_service_status)" = "active" ] && command_exists wg; then
+	if wg_iface_up && command_exists wg; then
 		echo "Live peers:"
 		wg show "$WGVPN_IFACE" 2>/dev/null || echo "  (unavailable)"
 	fi

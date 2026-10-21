@@ -67,6 +67,13 @@ write_conf() {
 	[[ "$output" == *"PresharedKey = "* ]]
 }
 
+@test "peer_add fails clearly for split4 with no networks, instead of writing a broken client" {
+	write_conf true
+	run peer_add bob split4
+	[ "$status" -ne 0 ]
+	[ ! -f "${WGVPN_CLIENTS_DIR}/bob.json" ]
+}
+
 @test "rendered server config's [Peer] block matches use_psk setting" {
 	write_conf false
 	peer_add alice
