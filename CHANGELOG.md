@@ -2,6 +2,81 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.0.2] - 2026-10-21
+
+Bug-fix release: a real production VPN-connectivity investigation, plus a
+second interactive-installer hotfix.
+
+### Fixed
+- **Installer prompts going invisible mid-wizard (looked like a hang).**
+  `wgvpn_init_tty()` opened the controlling terminal with a bare
+  `exec 3<>/dev/tty 2>/dev/null`. A command-less `exec` applies ALL of its
+  redirections to the current shell permanently - not just for that one
+  open attempt - so `2>/dev/null` silently and permanently redirected the
+  installer's own stderr to `/dev/null` from that point on. Since
+  `read -p` prompts, and every `warn()`/`err()`/`die()` message, are
+  written to stderr, every prompt after the very first one (and every
+  warning or error with it) stopped being displayed entirely, while the
+  underlying reads kept working correctly underneath - indistinguishable
+  from a hang. Fixed by scoping the redirect to a brace-group command.
+- **`use_psk=false` had no effect.** `peer_add()` generated and stored a
+  preshared key for every client unconditionally. Exposed a real bug in
+  `json_get()` along the way: its jq filter substituted a fallback value
+  for ANY falsy JSON value, not just a missing key - so a stored `false`
+  was silently read back as `""`, indistinguishable from the key being
+  absent. Every other caller's `= "true"` style check happened to survive
+  that; a `!= "false"` check did not. Both are fixed.
+- **Generated client configs could advertise an unreachable private IP as
+  the server's public endpoint.** When every external IP-lookup service
+  failed, the installer fell back to the primary address on the default
+  network interface with no check on whether it was actually publicly
+  routable - on many real cloud/VPS hosts (AWS, GCP, Azure, and others)
+  that address is private/NAT'd, and the real public IP is never visible
+  to `ip addr` at all. A generated client config/QR code could end up
+  with an endpoint nothing on the internet could reach, reproducibly,
+  surviving a full uninstall/reinstall. The installer now refuses to use
+  an unverified private/reserved address silently: it dies with a clear
+  message in `--non-interactive` mode (requiring an explicit `--endpoint`)
+  and warns clearly before the interactive confirmation prompt otherwise.
+- **Adding/enabling/disabling/deleting a client silently had no effect in
+  non-systemd environments.** `wg_apply_peer_live()`/`wg_service_restart()`
+  were gated on the systemd unit reporting "active"; in any environment
+  without systemd (containers, CI, some minimal/LXC-based VPS images)
+  this did nothing at all while still reporting success, leaving the live
+  interface completely out of sync with zero errors anywhere. Confirmed
+  via a real network-namespace reproduction. Fixed to key off whether the
+  WireGuard interface itself exists, independent of systemd.
+- **Split-tunnel modes (`split4`/`split6`/`split-dual`) with no network
+  given produced an unusable client.** Silently rendered an empty
+  `AllowedIPs =`, which `wg`/`wg-quick` reject outright. Now fails clearly
+  instead. The documented, installer-default IPv4 full-tunnel path is
+  unaffected.
+
+### Added
+- A real end-to-end connectivity test (`tests/e2e/tunnel_test.sh`) using
+  Linux network namespaces: runs this project's actual `install.sh` and
+  `wg-vpn add-client`/`export`, imports the generated config in a separate
+  client namespace exactly as a real WireGuard client would, and verifies
+  with real packets across a genuinely routed three-namespace topology
+  that a Noise handshake completes, the client reaches the server's VPN
+  address, reaches the public internet through the server's NAT, and
+  resolves DNS through the tunnel.
+- `wg-vpn test-client <name>` (and interactive menu option 21): a
+  secret-free, server-side connectivity report for one client -
+  configured/enabled/loaded-live state, latest handshake, RX/TX, and a
+  plain-language interpretation of what that means.
+- `wg-vpn diagnostics` now also checks: the endpoint address against
+  known private/reserved IPv4 and link-local/ULA IPv6 ranges, and whether
+  a hostname endpoint resolves; whether the configured public interface
+  still matches the live default-route interface; NAT/masquerade and
+  firewall FORWARD rule presence specifically, not just the inbound port
+  rule; and prints every client's connectivity report, with one summary
+  hint about a possible firewall outside this server (which this software
+  cannot see or change) only when there's actual evidence for it.
+- Regression tests for every fix above (`tests/interactive_install.bats`,
+  `tests/peers.bats`, `tests/validate.bats`, `tests/routing.bats`,
+  `tests/diagnostics.bats`).
+
 ## [1.0.1] - 2026-10-20
 
 Bug-fix release.
