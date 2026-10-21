@@ -194,9 +194,17 @@ confirm() {
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 # --- Minimal JSON helpers (require jq; installed by the installer) ---------
+# json_get <file> <key>: prints the key's value, or "" if absent/null.
+# Deliberately NOT `.[$k] // empty`: jq's `//` substitutes its right-hand
+# side for ANY "falsy" value, which in jq means false and null alike - so
+# that filter would silently turn a stored JSON `false` into the same
+# empty string as a missing key, indistinguishable from each other. That
+# happens to be harmless for every existing `[ "$x" = "true" ]`-style
+# caller (false and "" both fail that check), but is wrong in general and
+# bit a `!= "false"` style check while this was being fixed.
 json_get() {
 	local file="$1" key="$2"
-	jq -r --arg k "$key" '.[$k] // empty' "$file" 2>/dev/null
+	jq -r --arg k "$key" '.[$k] as $v | if $v == null then "" else $v end' "$file" 2>/dev/null
 }
 
 # json_set <file> <key> <value> [type: string|raw]  - atomic in-place update

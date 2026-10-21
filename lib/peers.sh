@@ -34,10 +34,11 @@ peer_add() {
 		fi
 	fi
 
-	local privkey pubkey psk
+	local use_psk privkey pubkey psk=""
+	use_psk="$(json_get "$WGVPN_CONF" use_psk)"
 	privkey="$(wg_genkey)"
 	pubkey="$(wg_pubkey "$privkey")"
-	psk="$(wg_genpsk)"
+	if [ "$use_psk" != "false" ]; then psk="$(wg_genpsk)"; fi
 
 	local allowed
 	allowed="$(routing_mode_allowed_ips "$mode" "$v4nets" "$v6nets")" || die "Invalid connection mode: $mode"
