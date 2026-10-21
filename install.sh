@@ -305,17 +305,39 @@ if [ "$need_ipv6" = "1" ] && [ -z "$OPT_IPV6_SUBNET" ]; then
 fi
 
 if [ -z "$OPT_ENDPOINT" ]; then
+	ENDPOINT_CONFIRMED_PUBLIC=1
 	if [ "$need_ipv6" = "1" ]; then
 		OPT_ENDPOINT="$(net_public_ipv6 || true)"
 	fi
 	if [ -z "$OPT_ENDPOINT" ]; then OPT_ENDPOINT="$(net_public_ipv4 || true)"; fi
+	if [ -z "$OPT_ENDPOINT" ]; then
+		# Every externally-verified lookup failed. Falling back to the
+		# primary local-interface address is only a GUESS - on many real
+		# VPS/cloud hosts (AWS/GCP/Azure and others) that address is
+		# private/NAT'd and nothing on the internet can reach it, which is
+		# exactly how a generated client config ends up silently
+		# unreachable. Never advertise it as a proven public endpoint.
+		OPT_ENDPOINT="$(net_local_ipv4_fallback || true)"
+		ENDPOINT_CONFIRMED_PUBLIC=0
+	fi
 	if [ -z "$OPT_ENDPOINT" ]; then die "Could not auto-detect a public endpoint. Pass --endpoint=<ip-or-hostname>."; fi
+	if [ "$ENDPOINT_CONFIRMED_PUBLIC" = "0" ]; then
+		if [ "$NONINTERACTIVE" = "1" ]; then
+			die "Could not confirm a publicly-routable endpoint automatically (only an unverified local address, ${OPT_ENDPOINT}, was found - it is commonly private/NAT'd and unreachable from the internet). Re-run with --endpoint=<your-real-public-ip-or-hostname>."
+		fi
+		warn "Could not confirm a publicly-routable endpoint automatically (all external lookups failed)."
+		warn "Best guess from this host's own network interface: ${OPT_ENDPOINT} - this is commonly a PRIVATE address on cloud/VPS hosts and would be unreachable from the internet if accepted as-is."
+	fi
 	if [ "$NONINTERACTIVE" != "1" ]; then
 		prompt_read v "Detected public endpoint [${OPT_ENDPOINT}] (press Enter to accept, or type a different host/IP): "
 		OPT_ENDPOINT="${v:-$OPT_ENDPOINT}"
 	fi
 fi
 valid_endpoint_host "$OPT_ENDPOINT" || die "Invalid endpoint: $OPT_ENDPOINT"
+if valid_ipv4 "$OPT_ENDPOINT" && ! ipv4_is_global_unicast "$OPT_ENDPOINT"; then
+	warn "Endpoint '${OPT_ENDPOINT}' is a private/reserved IPv4 address, not a publicly-routable one."
+	warn "Clients connecting over the public internet will NOT be able to reach this server at this address."
+fi
 
 # --- Install packages ---------------------------------------------------------
 phase "Installing packages"

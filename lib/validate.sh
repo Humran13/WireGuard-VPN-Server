@@ -173,3 +173,35 @@ ipv4_in_cidr() {
 	read -r s e <<<"$r"
 	[ "$ip_int" -ge "$s" ] && [ "$ip_int" -le "$e" ]
 }
+
+# ipv4_is_global_unicast <ip>: 0 if this address is NOT private/reserved and
+# could plausibly be reached from the public internet. This is a sanity
+# check against obvious wrong-endpoint mistakes (eg. a cloud VM's private
+# NIC address, or an RFC1918 LAN address, silently advertised as "the
+# public endpoint" in a generated client config) - it is not a substitute
+# for genuinely confirming reachability, which requires an external lookup.
+ipv4_is_global_unicast() {
+	local ip="$1" cidr
+	valid_ipv4 "$ip" || return 1
+	for cidr in \
+		0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 \
+		172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.168.0.0/16 \
+		198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4
+	do
+		ipv4_in_cidr "$ip" "$cidr" && return 1
+	done
+	return 0
+}
+
+# ipv6_is_global_unicast <ip>: conservative check rejecting the common
+# non-global IPv6 prefixes (loopback, link-local, unique-local/ULA). Unlike
+# the IPv4 check this does not attempt full reserved-range coverage.
+ipv6_is_global_unicast() {
+	local ip="$1" lc
+	valid_ipv6 "$ip" || return 1
+	lc="${ip,,}"
+	[ "$lc" = "::1" ] && return 1
+	[[ "$lc" == fe8* || "$lc" == fe9* || "$lc" == fea* || "$lc" == feb* ]] && return 1  # fe80::/10
+	[[ "$lc" == fc* || "$lc" == fd* ]] && return 1  # fc00::/7 (ULA)
+	return 0
+}

@@ -34,7 +34,16 @@ net_ipv6_available() {
 	return 0
 }
 
-# net_public_ipv4: best-effort public IPv4 detection with multiple fallbacks.
+# net_public_ipv4: public IPv4 detection via external lookup services only.
+# Deliberately does NOT fall back to the primary local-interface address:
+# on many real VPS/cloud hosts (AWS EC2, GCP, Azure, and others) the NIC
+# only ever carries a private/NAT'd address - the actual public IP exists
+# only as a mapping in the provider's network fabric and is never visible
+# to `ip addr`. Returning that private address here, indistinguishable
+# from a genuinely confirmed public one, is exactly how a generated client
+# config can end up with an endpoint nothing on the internet can reach.
+# See net_local_ipv4_fallback for the (explicitly last-resort, unverified)
+# local-address guess.
 net_public_ipv4() {
 	local ip svc
 	local services=(
@@ -49,14 +58,21 @@ net_public_ipv4() {
 			return 0
 		fi
 	done
-	# local fallback: primary address on default iface
-	local iface
-	iface="$(net_default_iface)"
-	if [ -n "$iface" ]; then
-		ip="$(ip -4 addr show dev "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
-		if [ -n "$ip" ]; then echo "$ip"; return 0; fi
-	fi
 	return 1
+}
+
+# net_local_ipv4_fallback: the primary address on the default route
+# interface. This is a last-resort GUESS used only when net_public_ipv4's
+# external lookups all failed - it is NOT verified to be internet-
+# reachable (it commonly isn't, on hosts whose public IP is NAT'd at the
+# provider level) and callers must treat it as unconfirmed.
+net_local_ipv4_fallback() {
+	local iface ip
+	iface="$(net_default_iface)"
+	[ -n "$iface" ] || return 1
+	ip="$(ip -4 addr show dev "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
+	[ -n "$ip" ] || return 1
+	echo "$ip"
 }
 
 # net_public_ipv6: best-effort public IPv6 detection.

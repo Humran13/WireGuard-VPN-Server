@@ -151,3 +151,33 @@ setup() {
 	[ "$status" -eq 0 ]
 	[ "$output" = "192.168.1.10" ]
 }
+
+@test "ipv4_is_global_unicast accepts real public addresses" {
+	run ipv4_is_global_unicast "8.8.8.8"; [ "$status" -eq 0 ]
+	run ipv4_is_global_unicast "1.1.1.1"; [ "$status" -eq 0 ]
+	run ipv4_is_global_unicast "203.0.113.200"; [ "$status" -ne 0 ]  # TEST-NET-3, not actually public
+}
+
+@test "ipv4_is_global_unicast rejects private/reserved ranges" {
+	run ipv4_is_global_unicast "10.1.2.3"; [ "$status" -ne 0 ]
+	run ipv4_is_global_unicast "172.16.5.5"; [ "$status" -ne 0 ]
+	run ipv4_is_global_unicast "192.168.1.1"; [ "$status" -ne 0 ]
+	run ipv4_is_global_unicast "127.0.0.1"; [ "$status" -ne 0 ]
+	run ipv4_is_global_unicast "169.254.1.1"; [ "$status" -ne 0 ]
+	run ipv4_is_global_unicast "100.64.0.5"; [ "$status" -ne 0 ]  # CGNAT
+	run ipv4_is_global_unicast "198.18.0.1"; [ "$status" -ne 0 ]  # benchmarking
+	run ipv4_is_global_unicast "224.0.0.1"; [ "$status" -ne 0 ]  # multicast
+}
+
+@test "ipv4_is_global_unicast rejects malformed input instead of erroring" {
+	run ipv4_is_global_unicast "not-an-ip"
+	[ "$status" -ne 0 ]
+}
+
+@test "ipv6_is_global_unicast accepts a real global address and rejects local scopes" {
+	run ipv6_is_global_unicast "2606:4700:4700::1111"; [ "$status" -eq 0 ]
+	run ipv6_is_global_unicast "::1"; [ "$status" -ne 0 ]
+	run ipv6_is_global_unicast "fe80::1"; [ "$status" -ne 0 ]
+	run ipv6_is_global_unicast "fd00::1"; [ "$status" -ne 0 ]
+	run ipv6_is_global_unicast "fc00::1"; [ "$status" -ne 0 ]
+}
